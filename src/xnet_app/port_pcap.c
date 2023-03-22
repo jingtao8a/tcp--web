@@ -1,11 +1,12 @@
 ﻿#include "pcap_device.h"
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 #include "xnet_tiny.h"
 
 static pcap_t *pcap;
-static const uint8_t my_mac_addr[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
-static const char *ip_str = "192.168.159.1";
+static const uint8_t my_mac_addr[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};//虚拟MAC地址
+static const char *ip_str = "192.168.159.1";//主机IP地址
 
 xnet_err_t xnet_driver_open(uint8_t* mac_addr) {
     memcpy(mac_addr, my_mac_addr, XNET_MAC_ADDR_SIZE);
@@ -34,4 +35,9 @@ xnet_err_t xnet_driver_read(xnet_packet_t** packet) {
         return XNET_ERR_OK;
     }
     return XNET_ERR_IO;
+}
+
+
+const xnet_time_t xsys_get_time() {
+    return clock() / CLOCKS_PER_SEC;
 }
