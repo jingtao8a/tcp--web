@@ -9,10 +9,11 @@
 #define XNET_IPV4_ADDR_SIZE 4//IP地址长度
 
 #pragma pack(1)
-//ether以太网报头 协议类型
+//协议类型
 typedef enum _xnet_protocol_t {
     XNET_PROTOCOL_ARP = 0x0806,
     XNET_PROTOCOL_IPV4 = 0x0800,
+    XNET_PROTOCOL_ICMP = 1,
 } xnet_protocol_t;
 
 //ether以太网报头
@@ -38,6 +39,38 @@ typedef struct _xarp_packet_t {
     uint8_t target_mac[XNET_MAC_ADDR_SIZE];
     uint8_t target_ip[XNET_IPV4_ADDR_SIZE];
 } xarp_packet_t;
+
+
+#define XNET_VERSION_IPV4 0x4 // IP 版本号
+#define XNET_IP_DEFAULT_TTL 64;//IP报文默认ttl
+
+//IP协议报头
+typedef struct _xip_hdr_t {
+    uint8_t hdr_len : 4;//报头长度
+    uint8_t version : 4;
+    uint8_t tos;//服务类型
+    uint16_t total_len;//总长度
+    uint16_t id;
+    uint16_t flags_fragment;
+    uint8_t ttl;
+    uint8_t protocol;
+    uint16_t hdr_checksum;
+    uint8_t src_ip[XNET_IPV4_ADDR_SIZE];
+    uint8_t dest_ip[XNET_IPV4_ADDR_SIZE];
+} xip_hdr_t;
+
+#define XICMP_CODE_ECHO_REQUEST 8
+#define XICMP_CODE_ECHO_REPLY 0
+
+//ICMP协议报头
+typedef struct _xicmp_hdr_t {
+    uint8_t type;
+    uint8_t code;
+    uint16_t checksum;
+    uint16_t id;
+    uint16_t seq;
+}xicmp_hdr_t;
+
 
 #pragma pack()
 
@@ -69,13 +102,14 @@ typedef struct _xarp_entry_t {
 
 typedef uint32_t xnet_time_t;
 
-const xnet_time_t xsys_get_time();
+const xnet_time_t xsys_get_time();//获取程序运行时间
 
 ////////////////////////////////////////////////////////////////////////
 
 typedef enum _xnet_err_t {
     XNET_ERR_OK = 0,
     XNET_ERR_IO = -1,
+    XNET_ERR_NONE = -2,
 } xnet_err_t;
 
 typedef struct _xnet_packet_t {
