@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "xserver_datetime.h": "c",
+        "string.h": "c"
+    }
+}

@@ -5,8 +5,8 @@
 #include "xnet_tiny.h"
 
 static pcap_t *pcap;
-static const uint8_t my_mac_addr[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};//虚拟MAC地址
-static const char *ip_str = "192.168.159.1";//主机IP地址
+static uint8_t my_mac_addr[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};//虚拟MAC地址
+static char *ip_str = "192.168.159.1";//主机IP地址
 
 xnet_err_t xnet_driver_open(uint8_t* mac_addr) {
     memcpy(mac_addr, my_mac_addr, XNET_MAC_ADDR_SIZE);
