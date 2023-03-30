@@ -16,3 +16,4 @@ add_subdirectory(src/xnet_app)
 target_link_libraries(${PROJECT_NAME} xnet_tiny xnet_app)
 
 
+# add_executable(test1 ./test/test1.c)

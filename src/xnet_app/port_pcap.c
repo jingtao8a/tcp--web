@@ -18,8 +18,8 @@ xnet_err_t xnet_driver_open(uint8_t* mac_addr) {
 }
 
 xnet_err_t xnet_driver_send(xnet_packet_t* packet) {
-    uint16_t size = pcap_device_send(pcap, packet->data, packet->size);
-    if(size == packet->size) {
+    uint32_t ret = pcap_device_send(pcap, packet->data, packet->size);
+    if (ret == 0) {
         return XNET_ERR_OK;
     }
     return XNET_ERR_IO;

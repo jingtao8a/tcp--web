@@ -1,6 +1,10 @@
 ﻿#include "xnet_tiny.h"
 #include <string.h>
+#include <stdlib.h>
+
 #define min(a, b) ((a) < (b) ? (a) : (b))
+#define tcp_get_init_seq()      ((rand() << 16)  + rand())
+
 static xipaddr_t netif_ipaddr = XNET_CFG_NETIF_IP;//虚拟IP地址
 static uint8_t netif_mac[XNET_MAC_ADDR_SIZE];//虚拟MAC地址
 static uint8_t ether_broadcast[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};//广播MAC地址
@@ -9,7 +13,7 @@ static xnet_packet_t tx_packet, rx_packet;//xnet的读写缓冲区
 static xarp_entry_t arp_entry;//IP-ARP映射表
 static xnet_time_t arp_timer;
 static xudp_t udp_socket[XUDP_CFG_MAX_UDP];
-
+static xtcp_t tcp_socket[XTCP_CFG_MAX_TCP];
 
 static int xnet_check_tmo(xnet_time_t *time, uint32_t sec) {
     xnet_time_t curr = xsys_get_time();
@@ -57,6 +61,22 @@ static uint16_t swap_order16(uint16_t x) {
     x = ((x & 0xff00) >> 8) | ((x & 0xff) << 8);
     return x;
 }
+
+static uint32_t swap_order32(uint32_t x) {
+    // x = (((x >> 0) & 0xFF) << 24) | (((x  >> 8) & 0xFF) << 16) | (((x >> 16) & 0xFF) << 8) | (((x >> 24) & 0xFF) << 0);
+    uint8_t *v_array = (uint8_t *)&x;
+    uint8_t temp;
+    temp = v_array[0];
+    v_array[0] = v_array[3];
+    v_array[3] = temp;
+
+    temp = v_array[1];
+    v_array[1] = v_array[2];
+    v_array[2] = temp;
+
+    return x;
+}
+
 static void xipaddr_from_buf(xipaddr_t *ip, uint8_t *buf) {
     ip->addr = *(uint32_t *)buf;
 }
@@ -123,8 +143,85 @@ static xnet_err_t xarp_make_request(const xipaddr_t *ipaddr) {
     return ethernet_out_to(XNET_PROTOCOL_ARP, ether_broadcast, packet);
 }
 
-static void xudp_init() {
-    memset(udp_socket, 0, sizeof(udp_socket));
+static xtcp_t *tcp_alloc() {
+    xtcp_t* tcp, *end;
+
+    for (tcp = tcp_socket, end = tcp_socket + XTCP_CFG_MAX_TCP; tcp < end; ++tcp) {
+        if (tcp->state == XTCP_STATE_FREE) {
+            tcp->local_port = tcp->remote_port = 0;
+            tcp->remote_ip.addr = 0;
+            tcp->next_seq = tcp_get_init_seq();
+            tcp->ack = 0;
+            tcp->remote_mss = XTCP_MSS_DEFAULT;
+            tcp->remote_win = XTCP_MSS_DEFAULT;
+            tcp->handler = (xtcp_handler_t)0;
+            return tcp;
+        }
+    }
+    return (xtcp_t *)0;
+}
+
+static void tcp_free(xtcp_t *tcp) {
+    tcp->state = XTCP_STATE_FREE;
+}
+
+static xtcp_t *tcp_find(xipaddr_t* remote_ip, uint16_t remote_port, uint16_t local_port) {
+    xtcp_t *tcp, *end;
+    xtcp_t *founded_tcp = (xtcp_t *)0;
+    for (tcp = tcp_socket, end = &tcp_socket[XTCP_CFG_MAX_TCP]; tcp < end; ++tcp) {
+        if (tcp->state == XTCP_STATE_FREE) {
+            continue;
+        }
+
+        if (tcp->local_port != local_port) {
+            continue;
+        }
+
+        if (xipaddr_is_equal(remote_ip, &tcp->remote_ip) && (remote_port == tcp->remote_port)) {
+            return tcp;
+        }
+        if (tcp->state == XTCP_STATE_LISTEN) {
+            founded_tcp = tcp;
+        }
+    }
+    return founded_tcp;
+}
+
+xtcp_t *xtcp_open(xtcp_handler_t handler) {
+    xtcp_t *tcp = tcp_alloc();
+    if (!tcp) return (xtcp_t *)0;
+
+    tcp->state = XTCP_STATE_CLOSED;
+    tcp->handler = handler;
+    return tcp;
+}
+
+xnet_err_t xtcp_bind(xtcp_t *tcp, uint16_t local_port) {
+    xtcp_t *curr, *end;
+    for (curr = tcp_socket, end = &tcp_socket[XTCP_CFG_MAX_TCP]; curr < end; curr++) {
+        if (curr != tcp && curr->state != XTCP_STATE_FREE && curr->local_port == local_port) {
+            return XNET_ERR_BINDED;
+        }
+    }
+
+    tcp->local_port = local_port;
+    return XNET_ERR_OK;
+}
+
+xnet_err_t xtcp_listen(xtcp_t *tcp) {
+    tcp->state = XTCP_STATE_LISTEN;
+    return XNET_ERR_OK;
+}
+
+xnet_err_t xtcp_close(xtcp_t *tcp) {
+    xnet_err_t err;
+    if (tcp->state == XTCP_STATE_ESTABLISHED) {
+        extern xnet_err_t tcp_send(xtcp_t *tcp, uint8_t flags);
+        err = tcp_send(tcp, XTCP_FLAG_FIN | XTCP_FLAG_ACK);
+        tcp->state = XTCP_STATE_FIN_WAIT1;
+    }
+    tcp_free(tcp);
+    return XNET_ERR_OK;
 }
 
 xudp_t* xudp_open(xudp_handler_t handler) {
@@ -166,6 +263,14 @@ xnet_err_t xudp_bind(xudp_t* udp, uint16_t local_port) {
     return XNET_ERR_OK;
 }
 
+static void xtcp_init() {
+    memset(tcp_socket, 0, sizeof(tcp_socket));
+}
+
+static void xudp_init() {
+    memset(udp_socket, 0, sizeof(udp_socket));
+}
+
 static void xicmp_init() {
 
 }
@@ -190,6 +295,8 @@ void xnet_init() {
     xip_init();
     xicmp_init();
     xudp_init();
+    xtcp_init();
+    srand(xsys_get_time());
 }
 
 /////////////////////////////////////////////////////////
@@ -204,6 +311,188 @@ static uint16_t checksum_peso(xipaddr_t *src_ip, xipaddr_t *dest_ip, uint8_t pro
     sum = checksum16((uint16_t *)&c_len, 2, sum, 0);
 
     return checksum16(buf, len, sum, 1);
+}
+static xnet_err_t tcp_send(xtcp_t *tcp, uint8_t flags) {
+    xnet_packet_t *packet;
+    xtcp_hdr_t *tcp_hdr;
+    xnet_err_t err;
+    uint16_t opt_size = (flags & XTCP_FLAG_SYN) ? 4 : 0;
+
+
+    packet = xnet_alloc_for_send(sizeof(xtcp_hdr_t) + opt_size);
+    tcp_hdr = (xtcp_hdr_t *)packet->data;
+    tcp_hdr->src_port = swap_order16(tcp->local_port);
+    tcp_hdr->dest_port = swap_order16(tcp->remote_port);
+    tcp_hdr->seq = swap_order32(tcp->next_seq);
+    tcp_hdr->ack = swap_order32(tcp->ack);
+    tcp_hdr->hdr_flags.all = 0;
+    tcp_hdr->hdr_flags.hdr_len = (opt_size + sizeof(xtcp_hdr_t)) / 4;
+    tcp_hdr->hdr_flags.flags = flags;
+    tcp_hdr->hdr_flags.all = swap_order16(tcp_hdr->hdr_flags.all);
+    tcp_hdr->window = 1024;
+    tcp_hdr->checksum = 0;
+    tcp_hdr->urgent_ptr = 0;
+    if (flags & XTCP_FLAG_SYN) {
+        uint8_t *opt_data = packet->data + sizeof(xtcp_hdr_t);
+        opt_data[0] = XTCP_KIND_MSS;
+        opt_data[1] = 4;
+        *(uint16_t *)(opt_data + 2) = swap_order16(XTCP_MSS_DEFAULT);
+    }
+    tcp_hdr->checksum = checksum_peso(&netif_ipaddr, &tcp->remote_ip, XNET_PROTOCOL_TCP, (uint16_t *)packet->data, packet->size);
+    tcp_hdr->checksum = tcp_hdr->checksum ? tcp_hdr->checksum : 0xFFFF;
+    extern xnet_err_t xip_out(xnet_protocol_t protocol, xipaddr_t *dest_ip, xnet_packet_t* packet);
+    err = xip_out(XNET_PROTOCOL_TCP, &tcp->remote_ip, packet);
+    if (err != XNET_ERR_OK) {
+        return err;
+    }
+    if (flags & (XTCP_FLAG_SYN | XTCP_FLAG_FIN)) {
+        tcp->next_seq++; 
+    }
+
+    return XNET_ERR_OK;
+}
+
+static xnet_err_t tcp_send_reset(uint32_t remote_ack, uint16_t local_port, xipaddr_t *remote_ip, uint16_t remote_port) {
+    xnet_packet_t *packet = xnet_alloc_for_send(sizeof(xtcp_hdr_t));
+    xtcp_hdr_t *tcp_hdr = (xtcp_hdr_t *)packet->data;
+    tcp_hdr->src_port = swap_order16(local_port);
+    tcp_hdr->dest_port = swap_order16(remote_port);
+    tcp_hdr->seq = 0;
+    tcp_hdr->ack = swap_order32(remote_ack);
+    tcp_hdr->hdr_flags.all = 0;
+    tcp_hdr->hdr_flags.hdr_len = sizeof(xtcp_hdr_t) / 4;
+    tcp_hdr->hdr_flags.flags = XTCP_FLAG_RST | XTCP_FLAG_ACK;
+    tcp_hdr->hdr_flags.all = swap_order16(tcp_hdr->hdr_flags.all);
+    tcp_hdr->window = 0;
+    tcp_hdr->checksum = 0;
+    tcp_hdr->urgent_ptr = 0;
+    tcp_hdr->checksum = checksum_peso(&netif_ipaddr, remote_ip, XNET_PROTOCOL_TCP, (uint16_t *)packet->data, packet->size);
+    tcp_hdr->checksum = tcp_hdr->checksum ? tcp_hdr->checksum : 0xFFFF;
+    extern xnet_err_t xip_out(xnet_protocol_t protocol, xipaddr_t *dest_ip, xnet_packet_t* packet);
+    return xip_out(XNET_PROTOCOL_TCP, remote_ip, packet);
+}
+
+static void tcp_read_mss(xtcp_t *tcp, xtcp_hdr_t *tcp_hdr) {
+    uint16_t opt_len = tcp_hdr->hdr_flags.hdr_len * 4 - sizeof(xtcp_hdr_t);
+    if (opt_len == 0) {
+        tcp->remote_mss = XTCP_MSS_DEFAULT;
+    } else {
+        uint8_t *opt_data = (uint8_t *)tcp_hdr + sizeof(xtcp_hdr_t);
+        uint8_t *opt_end = opt_data + opt_len;
+        while ((*opt_data != XTCP_KIND_END) && (opt_data < opt_end)) {
+            if ((*opt_data++ == XTCP_KIND_MSS) && (*opt_data++ == 4)) {
+                tcp->remote_mss = swap_order16(*(uint16_t *)opt_data);
+                return;
+            }
+        }
+    }
+}
+
+static void tcp_process_accept(xtcp_t *listen_tcp, xipaddr_t *remote_ip, xtcp_hdr_t *tcp_hdr) {
+    uint16_t hdr_flags = tcp_hdr->hdr_flags.all;
+    if (hdr_flags & XTCP_FLAG_SYN) {
+        uint32_t ack = tcp_hdr->seq + 1;
+        xtcp_t *new_tcp = tcp_alloc();
+        if (!new_tcp) {
+            return;
+        }
+
+        new_tcp->state = XTCP_STATE_SYN_RECVD;
+        new_tcp->local_port = listen_tcp->local_port;
+        new_tcp->handler = listen_tcp->handler;
+        new_tcp->remote_port = tcp_hdr->src_port;
+        new_tcp->remote_ip.addr = remote_ip->addr;
+        new_tcp->ack = ack;
+        new_tcp->remote_win = tcp_hdr->window;
+        tcp_read_mss(new_tcp, tcp_hdr);
+
+        xnet_err_t err = tcp_send(new_tcp, XTCP_FLAG_SYN | XTCP_FLAG_ACK);
+        if (err != XNET_ERR_OK) {
+            tcp_free(new_tcp);
+            return;
+        }
+    } else {
+        tcp_send_reset(tcp_hdr->seq + 1, listen_tcp->local_port, remote_ip, tcp_hdr->src_port);
+    }
+}
+
+static void xtcp_in(xipaddr_t* remote_ip, xnet_packet_t* packet) {
+    xtcp_hdr_t* tcp_hdr = (xtcp_hdr_t *)packet->data;
+    uint16_t pre_checksum;
+    xtcp_t *tcp;
+    if (packet->size < sizeof(xtcp_hdr_t)) {
+        return;
+    }
+
+    pre_checksum = tcp_hdr->checksum;
+    tcp_hdr->checksum = 0;
+    if (pre_checksum != 0) {
+        uint16_t checksum = checksum_peso(remote_ip, &netif_ipaddr, XNET_PROTOCOL_TCP, (uint16_t *)tcp_hdr, packet->size);
+        checksum = (checksum == 0) ? 0xFFFF : checksum;
+        if (checksum != pre_checksum) {
+            return;
+        }
+    }
+    tcp_hdr->src_port = swap_order16(tcp_hdr->src_port);
+    tcp_hdr->dest_port = swap_order16(tcp_hdr->dest_port);
+    tcp_hdr->hdr_flags.all = swap_order16(tcp_hdr->hdr_flags.all);
+    tcp_hdr->seq = swap_order32(tcp_hdr->seq);
+    tcp_hdr->ack = swap_order32(tcp_hdr->ack);
+    tcp_hdr->window = swap_order16(tcp_hdr->window);
+
+    tcp = tcp_find(remote_ip, tcp_hdr->src_port, tcp_hdr->dest_port);
+    if (tcp == (xtcp_t *)0) {//TCP端口不可达，未开启该端口
+        tcp_send_reset(tcp_hdr->seq + 1, tcp_hdr->dest_port, remote_ip, tcp_hdr->src_port);
+    }
+    tcp->remote_win = tcp_hdr->window;
+
+    if (tcp->state == XTCP_STATE_LISTEN) {
+        tcp_process_accept(tcp, remote_ip, tcp_hdr);
+        return;
+    }
+
+    if (tcp_hdr->seq != tcp->ack) {
+        tcp_send_reset(tcp_hdr->seq + 1, tcp_hdr->dest_port, remote_ip, tcp_hdr->src_port);
+        return;
+    }
+
+    remove_header(packet, tcp_hdr->hdr_flags.hdr_len * 4);
+    switch (tcp->state) {
+        case XTCP_STATE_SYN_RECVD:
+            if (tcp_hdr->hdr_flags.flags & XTCP_FLAG_ACK) {
+                tcp->state = XTCP_STATE_ESTABLISHED;
+                tcp->handler(tcp, XTCP_CONN_CONNECTED);
+            }
+            break;
+        case XTCP_STATE_ESTABLISHED:
+            if (tcp_hdr->hdr_flags.flags & (XTCP_FLAG_FIN)) {
+                tcp->state = XTCP_STATE_LAST_ACK;
+                tcp->ack++;
+                tcp_send(tcp, XTCP_FLAG_FIN | XTCP_FLAG_ACK);
+            }
+            break;
+        case XTCP_STATE_FIN_WAIT1:
+            if (tcp_hdr->hdr_flags.flags & (XTCP_FLAG_FIN | XTCP_FLAG_ACK) == (XTCP_FLAG_FIN | XTCP_FLAG_ACK)) {
+                // tcp->state = XTCP_STATE_TIMED_WAIT;
+                tcp_free(tcp);
+            } else if (tcp_hdr->hdr_flags.flags & XTCP_FLAG_ACK) {
+                tcp->state = XTCP_STATE_FIN_WAIT2;
+            }
+            break;
+        case XTCP_STATE_FIN_WAIT2:
+            if (tcp_hdr->hdr_flags.flags & XTCP_FLAG_FIN) {
+                tcp->ack++;
+                tcp_send(tcp, XTCP_FLAG_ACK);
+                tcp_free(tcp);
+            }
+            break;
+        case XTCP_STATE_LAST_ACK:
+            if (tcp_hdr->hdr_flags.flags & XTCP_FLAG_ACK) {
+                tcp->handler(tcp, XTCP_CONN_CLOSED);
+                tcp_free(tcp);
+            }
+            break;
+    }
 }
 
 xnet_err_t xudp_out(xudp_t *udp, xipaddr_t *dest_ip, uint16_t dest_port, xnet_packet_t *packet) {
@@ -311,7 +600,7 @@ static xnet_err_t reply_icmp_request(xicmp_hdr_t *icmp_hdr, xipaddr_t *src_ip, x
     xnet_packet_t *tx = xnet_alloc_for_send(packet->size);
     memcpy(tx->data, packet->data, packet->size);
     xicmp_hdr_t *reply_hdr = (xicmp_hdr_t *)tx->data;
-    reply_hdr->type = XICMP_CODE_ECHO_REPLY;
+    reply_hdr->type = XICMP_TYPE_ECHO_REPLY;
     reply_hdr->code = 0;
     reply_hdr->id = icmp_hdr->id;
     reply_hdr->seq = icmp_hdr->seq;
@@ -322,7 +611,7 @@ static xnet_err_t reply_icmp_request(xicmp_hdr_t *icmp_hdr, xipaddr_t *src_ip, x
 
 static void xicmp_in(xipaddr_t *src_ip, xnet_packet_t *packet) {
     xicmp_hdr_t *icmphdr = (xicmp_hdr_t *)packet->data;
-    if ((packet->size >= sizeof(xicmp_hdr_t)) && (icmphdr->type == XICMP_CODE_ECHO_REQUEST)) {
+    if ((packet->size >= sizeof(xicmp_hdr_t)) && (icmphdr->type == XICMP_TYPE_ECHO_REQUEST)) {
         reply_icmp_request(icmphdr, src_ip, packet);
     }
 }
@@ -363,6 +652,10 @@ static void xip_in(xnet_packet_t *packet) {
                     xicmp_dest_unreach(XICMP_CODE_PORT_UNREACH, iphdr);
                 }
             }
+        case XNET_PROTOCOL_TCP:
+            truncate_packet(packet, total_size);
+            remove_header(packet, header_size);
+            xtcp_in(&src_ip, packet);
         case XNET_PROTOCOL_ICMP:
             remove_header(packet, header_size);
             xicmp_in(&src_ip, packet);

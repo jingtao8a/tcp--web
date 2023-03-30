@@ -15,6 +15,7 @@ typedef enum _xnet_protocol_t {
     XNET_PROTOCOL_IPV4 = 0x0800,
     XNET_PROTOCOL_ICMP = 1,
     XNET_PROTOCOL_UDP = 17,
+    XNET_PROTOCOL_TCP = 6,
 } xnet_protocol_t;
 
 //ether以太网报头
@@ -60,8 +61,8 @@ typedef struct _xip_hdr_t {
     uint8_t dest_ip[XNET_IPV4_ADDR_SIZE];
 } xip_hdr_t;
 
-#define XICMP_CODE_ECHO_REQUEST 8
-#define XICMP_CODE_ECHO_REPLY 0
+#define XICMP_TYPE_ECHO_REQUEST 8
+#define XICMP_TYPE_ECHO_REPLY 0
 #define XICMP_TYPE_UNREACH 3
 
 
@@ -84,6 +85,27 @@ typedef struct _xudp_hdr_t {
     uint16_t checksum;
 } xudp_hdr_t;
 
+//TCP协议报头
+typedef struct _xtcp_hdr_t {
+    uint16_t src_port, dest_port;
+    uint32_t seq, ack;//序列号，响应号
+    
+#define XTCP_FLAG_FIN   (1 << 0) 
+#define XTCP_FLAG_SYN   (1 << 1)
+#define XTCP_FLAG_RST   (1 << 2)
+#define XTCP_FLAG_ACK   (1 << 4)
+    union {
+        struct {
+            uint16_t flags : 6;
+            uint16_t reverseved : 6;
+            uint16_t hdr_len : 4;
+        };
+        uint16_t all;
+    }hdr_flags;
+    uint16_t window;
+    uint16_t checksum;
+    uint16_t urgent_ptr;
+} xtcp_hdr_t;
 #pragma pack()
 
 
@@ -131,7 +153,7 @@ typedef struct _xnet_packet_t {
     uint8_t *data;
     uint8_t payload[XNET_CFG_PACKET_MAX_SIZE];
 } xnet_packet_t;
-
+//////  UDP socket控制块
 #define XUDP_CFG_MAX_UDP 10
 
 typedef struct _xudp_t xudp_t;
@@ -151,6 +173,52 @@ xudp_t* xudp_open(xudp_handler_t handler);
 void xudp_close(xudp_t *udp);
 xudp_t* xudp_find(uint16_t port);
 xnet_err_t xudp_bind(xudp_t* udp, uint16_t local_port);
+
+////////  TCP socket 控制块
+#define XTCP_CFG_MAX_TCP 40
+
+typedef enum _xtcp_conn_state_t {
+    XTCP_CONN_CONNECTED,
+    XTCP_CONN_DATA_RECV,
+    XTCP_CONN_CLOSED,
+}xtcp_conn_state_t;
+
+#define XTCP_KIND_END   0
+#define XTCP_KIND_MSS   2
+#define XTCP_MSS_DEFAULT    1460
+
+typedef struct _xtcp_t xtcp_t;
+typedef xnet_err_t (*xtcp_handler_t)(xtcp_t *tcp, xtcp_conn_state_t event);
+
+typedef struct _xtcp_t {
+    enum {
+        XTCP_STATE_FREE,
+        XTCP_STATE_CLOSED,
+        XTCP_STATE_LISTEN,
+        XTCP_STATE_SYN_RECVD,
+        XTCP_STATE_ESTABLISHED,
+        XTCP_STATE_FIN_WAIT1,
+        XTCP_STATE_FIN_WAIT2,
+        XTCP_SATTE_CLOSING,
+        XTCP_STATE_TIMED_WAIT,
+        XTCP_STATE_CLOSE_WAIT,
+        XTCP_STATE_LAST_ACK,
+    } state;
+    uint16_t local_port, remote_port;
+    xipaddr_t remote_ip;
+
+    uint32_t next_seq;
+    uint32_t ack;
+
+    uint16_t remote_mss;
+    uint16_t remote_win;
+    xtcp_handler_t handler;
+} xtcp_t;
+
+xtcp_t *xtcp_open(xtcp_handler_t handler);
+xnet_err_t xtcp_bind(xtcp_t *tcp, uint16_t local_port);
+xnet_err_t xtcp_listen(xtcp_t *tcp);
+xnet_err_t xtcp_close(xtcp_t *tcp);
 
 
 xnet_err_t xnet_driver_open(uint8_t* mac_addr);
