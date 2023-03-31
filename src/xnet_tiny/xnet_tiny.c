@@ -2,7 +2,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-// #define min(a, b) ((a) < (b) ? (a) : (b))
 #define tcp_get_init_seq()      ((rand() << 16)  + rand())
 #define XTCP_DATA_MAX_SIZE  (XNET_CFG_PACKET_MAX_SIZE - sizeof(xether_hdr_t) - sizeof(xip_hdr_t) - sizeof(xtcp_hdr_t))
 
@@ -13,7 +12,7 @@ static uint8_t ether_broadcast[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};//广播
 
 static xnet_packet_t tx_packet, rx_packet;//xnet的读写缓冲区
 static xarp_entry_t arp_entry;//IP-ARP映射表
-static xnet_time_t arp_timer;
+static xnet_time_t arp_timer; //ARP 扫描定时
 static xudp_t udp_socket[XUDP_CFG_MAX_UDP];
 static xtcp_t tcp_socket[XTCP_CFG_MAX_TCP];
 
@@ -620,7 +619,7 @@ static void xtcp_in(xipaddr_t* remote_ip, xnet_packet_t* packet) {
                     tcp_send(tcp, XTCP_FLAG_FIN | XTCP_FLAG_ACK);
                 } else if (read_size) {//对方不是FIN报文，携带数据
                     tcp_send(tcp, XTCP_FLAG_ACK);
-                    tcp->handler(tcp, XTCP_CONN_DATA_RECV);//触发回调函数，读取 TCP读缓存
+                    // tcp->handler(tcp, XTCP_CONN_DATA_RECV);//触发回调函数，读取 TCP读缓存
                 } else if (tcp_buf_wait_send_count(&tcp->tx_buf)) {//对方不是FIN报文，但不携带数据
                     tcp_send(tcp, XTCP_FLAG_ACK);
                 }
@@ -807,10 +806,12 @@ static void xip_in(xnet_packet_t *packet) {
                     xicmp_dest_unreach(XICMP_CODE_PORT_UNREACH, iphdr);//UDP端口不可达
                 }
             }
+            break;
         case XNET_PROTOCOL_TCP:
             truncate_packet(packet, total_size);//截断FCS等填充数据
             remove_header(packet, header_size);
             xtcp_in(&src_ip, packet);
+            break;
         case XNET_PROTOCOL_ICMP:
             remove_header(packet, header_size);
             xicmp_in(&src_ip, packet);

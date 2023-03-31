@@ -10,6 +10,7 @@ int main (void) {
     xserver_http_create(80);
     while (1) {
         xnet_poll();
+        xserver_http_run();
     }
 
     return 0;

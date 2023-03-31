@@ -145,6 +145,7 @@ typedef enum _xnet_err_t {
     XNET_ERR_IO = -1,
     XNET_ERR_NONE = -2,
     XNET_ERR_BINDED = -3,
+    XNET_ERR_MEM = -4,
 } xnet_err_t;
 
 
@@ -174,7 +175,7 @@ xnet_err_t xudp_bind(xudp_t* udp, uint16_t local_port);
 
 
 /////////TCP 控制块的缓存结构 start
-#define XTCP_CFG_RTX_BUF_SIZE 128 //TCP缓存大小
+#define XTCP_CFG_RTX_BUF_SIZE 2048 //TCP缓存大小
 
 typedef struct _xtcp_buf_t {
     uint16_t data_count, unacked_count;//发送缓存使用
