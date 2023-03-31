@@ -147,13 +147,9 @@ typedef enum _xnet_err_t {
     XNET_ERR_BINDED = -3,
 } xnet_err_t;
 
-#define XNET_CFG_PACKET_MAX_SIZE 1516 //包括2个字节的crc
-typedef struct _xnet_packet_t {
-    uint16_t size;
-    uint8_t *data;
-    uint8_t payload[XNET_CFG_PACKET_MAX_SIZE];
-} xnet_packet_t;
-//////  UDP socket控制块
+
+
+//////////////UDP 控制块 接口函数 start
 #define XUDP_CFG_MAX_UDP 10
 
 typedef struct _xudp_t xudp_t;
@@ -173,8 +169,24 @@ xudp_t* xudp_open(xudp_handler_t handler);
 void xudp_close(xudp_t *udp);
 xudp_t* xudp_find(uint16_t port);
 xnet_err_t xudp_bind(xudp_t* udp, uint16_t local_port);
+/////////UDP 控制块及接口函数 end
 
-////////  TCP socket 控制块
+
+
+/////////TCP 控制块的缓存结构 start
+#define XTCP_CFG_RTX_BUF_SIZE 128 //TCP缓存大小
+
+typedef struct _xtcp_buf_t {
+    uint16_t data_count, unacked_count;//发送缓存使用
+    uint16_t front, tail, next;//发送缓存使用
+    //接收缓存只使用data_count,front,tail
+    uint8_t data[XTCP_CFG_RTX_BUF_SIZE];
+} xtcp_buf_t;
+/////////TCP 控制块的缓存结构 end
+
+
+
+////////  TCP socket 控制块 及 接口函数 start
 #define XTCP_CFG_MAX_TCP 40
 
 typedef enum _xtcp_conn_state_t {
@@ -207,12 +219,14 @@ typedef struct _xtcp_t {
     uint16_t local_port, remote_port;
     xipaddr_t remote_ip;
 
-    uint32_t next_seq;
-    uint32_t ack;
+    uint32_t next_seq, unacked_seq;//发送缓存使用
+    uint32_t ack;//接收缓存使用
 
     uint16_t remote_mss;
     uint16_t remote_win;
     xtcp_handler_t handler;
+    xtcp_buf_t tx_buf;//发送缓存
+    xtcp_buf_t rx_buf;//接收缓存
 } xtcp_t;
 
 xtcp_t *xtcp_open(xtcp_handler_t handler);
@@ -220,6 +234,19 @@ xnet_err_t xtcp_bind(xtcp_t *tcp, uint16_t local_port);
 xnet_err_t xtcp_listen(xtcp_t *tcp);
 xnet_err_t xtcp_close(xtcp_t *tcp);
 
+int xtcp_write(xtcp_t *tcp, uint8_t *data, uint16_t size);
+int xtcp_read(xtcp_t *tcp, uint8_t *data, uint16_t size);
+////////  TCP socket 控制块 及 接口函数 end
+
+
+
+/////////全局缓存 及其接口函数 start
+#define XNET_CFG_PACKET_MAX_SIZE 1516 //包括2个字节的crc
+typedef struct _xnet_packet_t {
+    uint16_t size;
+    uint8_t *data;
+    uint8_t payload[XNET_CFG_PACKET_MAX_SIZE];
+} xnet_packet_t;
 
 xnet_err_t xnet_driver_open(uint8_t* mac_addr);
 xnet_err_t xnet_driver_send(xnet_packet_t* packet);
@@ -231,9 +258,12 @@ xnet_packet_t* xnet_alloc_for_read(uint16_t data_size);
 void add_header(xnet_packet_t *packet, uint16_t header_size);
 void remove_header(xnet_packet_t *packet, uint16_t header_size);
 void truncate_packet(xnet_packet_t *packet, uint16_t size);
+/////// 全局缓存 及其接口函数 end
+
 
 void xnet_init();
 void xnet_poll();
 
 xnet_err_t xudp_out(xudp_t *udp, xipaddr_t *dest_ip, uint16_t dest_port, xnet_packet_t *packet);
+
 #endif
